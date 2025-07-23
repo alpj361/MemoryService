@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  laura-memory:
+    build: .
+    container_name: laura-memory-service
+    ports:
+      - "5001:5001"
+    environment:
+      - ZEP_API_KEY=${ZEP_API_KEY}
+      - ZEP_URL=${ZEP_URL:-https://api.getzep.com}
+      - LAURA_SESSION_ID=${LAURA_SESSION_ID:-laura_memory_session}
+      - LAURA_MEMORY_ENABLED=${LAURA_MEMORY_ENABLED:-true}
+      - LAURA_MEMORY_URL=${LAURA_MEMORY_URL:-http://localhost:5001}
+      - DEBUG=${DEBUG:-false}
+      - FLASK_ENV=production
+    volumes:
+      - ./tests/cassettes:/app/tests/cassettes
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - laura-memory-network
+
+networks:
+  laura-memory-network:
+    driver: bridge

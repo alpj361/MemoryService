@@ -1,0 +1,15 @@
+{
+  "persons": [
+    {"name": "Sandra Torres", "alias": ["@sandralto7"], "role": "Politician", "party": "UNE"},
+    {"name": "Alejandro Giammattei", "alias": ["@DrGiammattei"], "role": "President of Guatemala"}
+  ],
+  "organizations": [
+    {"name": "Congreso de Guatemala", "alias": ["@CongresoGt"], "type": "Government"}
+  ],
+  "laws": [
+    {"id": "6115", "name": "Ley de Competencia", "status": "Draft", "proponents": ["Andrea Villagrán"]}
+  ],
+  "topics": [
+    "#LeyDeCompetencia"
+  ]
+} 
