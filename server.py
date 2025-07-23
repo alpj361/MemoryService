@@ -1,26 +1,108 @@
 """
 Servidor HTTP para exponer la funcionalidad de Laura Memory al backend JavaScript.
+Optimizado para producción con Gunicorn.
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 import logging
+import structlog
+import time
+import os
 from typing import Dict, Any
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 from integration import laura_memory_integration
 from memory import search_public_memory, get_memory_stats
 from political_graph import ensure_group_exists, search_political_context, ingest_batch
+from config import get_config
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configurar logging estructurado
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
 
-app = Flask(__name__)
+logger = structlog.get_logger(__name__)
+
+# Métricas de Prometheus
+REQUEST_COUNT = Counter('laura_memory_requests_total', 'Total requests', ['method', 'endpoint', 'status'])
+REQUEST_DURATION = Histogram('laura_memory_request_duration_seconds', 'Request duration')
+
+# Crear la aplicación Flask
+def create_app():
+    """Factory function para crear la aplicación Flask"""
+    app = Flask(__name__)
+    config = get_config()
+    app.config.from_object(config)
+    
+    # Configurar logging para producción
+    if not app.config['DEBUG']:
+        logging.basicConfig(
+            level=getattr(logging, config.LOG_LEVEL),
+            format='%(asctime)s %(levelname)s %(name)s %(message)s'
+        )
+    
+    return app
+
+app = create_app()
+
+# Middleware para métricas y seguridad
+@app.before_request
+def before_request():
+    """Middleware ejecutado antes de cada request"""
+    g.start_time = time.time()
+
+@app.after_request
+def after_request(response):
+    """Middleware ejecutado después de cada request"""
+    # Agregar headers de seguridad
+    config = app.config
+    if hasattr(config, 'SECURITY_HEADERS'):
+        for header, value in config.SECURITY_HEADERS.items():
+            response.headers[header] = value
+    
+    # Métricas
+    if hasattr(g, 'start_time'):
+        duration = time.time() - g.start_time
+        REQUEST_DURATION.observe(duration)
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=request.endpoint or 'unknown',
+            status=response.status_code
+        ).inc()
+    
+    return response
+
+@app.errorhandler(404)
+def not_found(error):
+    """Manejador de error 404"""
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Manejador de error 500"""
+    logger.error("Internal server error", exc_info=True)
+    return jsonify({"error": "Internal server error"}), 500
 
 # Ensure the group graph exists at startup
 try:
     ensure_group_exists()
+    logger.info("✅ Political group graph initialized successfully")
 except Exception as graph_err:
-    logger.error("Political group graph initialization failed: %s", graph_err)
+    logger.error("❌ Political group graph initialization failed", error=str(graph_err))
 
 
 @app.route('/api/laura-memory/process-tool-result', methods=['POST'])
@@ -187,10 +269,49 @@ def search_politics():
 @app.route('/health', methods=['GET'])
 def health_check():
     """
-    Health check endpoint.
+    Health check endpoint con información detallada.
     """
-    return jsonify({"status": "healthy", "service": "laura-memory"})
+    try:
+        # Verificar conexión a Zep
+        stats = get_memory_stats()
+        health_status = {
+            "status": "healthy",
+            "service": "laura-memory",
+            "version": "1.0.0",
+            "environment": app.config.get('FLASK_ENV', 'production'),
+            "zep_connected": bool(stats),
+            "timestamp": time.time()
+        }
+        return jsonify(health_status)
+    except Exception as e:
+        logger.error("Health check failed", error=str(e))
+        return jsonify({
+            "status": "unhealthy",
+            "service": "laura-memory",
+            "error": str(e),
+            "timestamp": time.time()
+        }), 503
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    """
+    Endpoint de métricas para Prometheus.
+    """
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+
+# Application factory para Gunicorn
+def create_application():
+    """Create and configure the Flask application for Gunicorn"""
+    return app
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    # Solo para desarrollo local - En producción usamos Gunicorn
+    logger.warning("🚨 Running with Flask development server - Use Gunicorn for production!")
+    config = get_config()
+    app.run(
+        host=config.HOST,
+        port=config.PORT,
+        debug=config.DEBUG
+    )

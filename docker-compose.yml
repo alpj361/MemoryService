@@ -14,17 +14,53 @@ services:
       - LAURA_MEMORY_URL=${LAURA_MEMORY_URL:-http://localhost:5001}
       - DEBUG=${DEBUG:-false}
       - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY:-production-secret-key-change-me}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GUNICORN_WORKERS=${GUNICORN_WORKERS:-4}
     volumes:
       - ./tests/cassettes:/app/tests/cassettes
       - ./logs:/app/logs
+      - /dev/shm:/dev/shm  # For Gunicorn performance
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
     networks:
       - laura-memory-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nginx reverse proxy (opcional para producción)
+  nginx:
+    image: nginx:alpine
+    container_name: laura-memory-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./logs:/var/log/nginx
+    depends_on:
+      - laura-memory
+    restart: unless-stopped
+    networks:
+      - laura-memory-network
+    profiles:
+      - with-nginx
 
 networks:
   laura-memory-network:
